@@ -1,0 +1,7 @@
+# MCP1 exchange-rate server dependencies
+
+# Anthropic official MCP Python SDK (includes FastMCP)
+mcp>=1.0.0
+
+# Redis client for exchange rate lookup
+redis>=5.0.0
