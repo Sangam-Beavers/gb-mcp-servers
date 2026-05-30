@@ -49,6 +49,8 @@ DB_NAME = os.environ.get("COMMUNITY_DB_NAME", "community_db")
 # 가드값
 MAX_LIMIT = 10               # LLM이 너무 많이 요청해도 잘라냄 (응답 토큰 폭주 방지)
 MAX_QUERY_LEN = 200          # 쿼리 길이 상한 (DoS 방지)
+MAX_TOKENS = 10              # query 공백 split 후 토큰 상한 (DoS + WHERE 절 폭발 방지)
+MIN_TOKEN_LEN = 2            # 1글자 토큰은 너무 광범위하게 매칭돼서 제외 (한국어 조사 등)
 MAX_COMMENTS_PER_POST = 5    # 글당 노출 댓글 수 상한
 CONTENT_PREVIEW_LEN = 300    # 본문 미리보기 자르기
 
@@ -86,8 +88,15 @@ def search_community_posts(query: str, limit: int = 3) -> str:
     겪은 사용자가 있는지 찾고 싶을 때 사용하세요. 게시글 제목·본문뿐 아니라 댓글까지
     함께 검색해 실제 사례와 다른 사용자들의 조언을 한꺼번에 반환합니다.
 
+    검색 전략:
+        - query를 공백 기준으로 split → 각 토큰별 OR LIKE 매칭
+        - 한 토큰이라도 title/content/comments 어디든 매치되면 그 글 포함
+        - 1글자 토큰(한국어 조사 등)은 제외, 최대 MAX_TOKENS개 토큰까지
+        - 짧은 키워드("최저임금")든 긴 자연어("최저임금 미달 임금 못 받음")든 안정 매칭
+
     Args:
-        query: 검색할 키워드. 자연어 가능 (예: "최저임금", "주 60시간", "근로계약서").
+        query: 검색할 키워드. 단일 단어 또는 공백 구분 다단어 가능.
+               예: "최저임금", "주 60시간", "임금 체불 신고", "E-9 비자 사업장 변경"
         limit: 반환할 게시글 수 (기본 3, 최대 10). 글 1개당 본문 + 댓글 최대 5개 포함.
 
     Returns:
@@ -100,26 +109,47 @@ def search_community_posts(query: str, limit: int = 3) -> str:
     if len(q) > MAX_QUERY_LEN:
         return f"검색어가 너무 깁니다 (최대 {MAX_QUERY_LEN}자)."
 
+    # 공백 기준 split + MIN_TOKEN_LEN 미만 토큰 필터 + MAX_TOKENS 가드
+    tokens = [t for t in q.split() if len(t) >= MIN_TOKEN_LEN][:MAX_TOKENS]
+    if not tokens:
+        return (
+            f'"{q}"에서 유효한 검색 키워드를 찾지 못했습니다. '
+            f"({MIN_TOKEN_LEN}자 이상의 단어로 검색해주세요)"
+        )
+
     safe_limit = max(1, min(int(limit), MAX_LIMIT))
-    like_pattern = f"%{q}%"
+
+    # 토큰별 OR 조건 동적 생성:
+    #   ((p.title LIKE %s OR p.content LIKE %s OR c.content LIKE %s)
+    #    OR (p.title LIKE %s OR p.content LIKE %s OR c.content LIKE %s)
+    #    OR ...)
+    or_blocks = " OR ".join(
+        ["(p.title LIKE %s OR p.content LIKE %s OR c.content LIKE %s)"
+         for _ in tokens]
+    )
+    params: list = []
+    for t in tokens:
+        like = f"%{t}%"
+        params.extend([like, like, like])
+    params.append(safe_limit)
 
     try:
         conn = _get_connection()
         cursor = conn.cursor(dictionary=True)
 
-        # 1단계 — 매칭되는 post id 후보 추출 (글 단위 LIMIT 적용)
+        # 1단계 — 매칭되는 post id 후보 추출 (글 단위 LIMIT 적용, 토큰별 OR)
         cursor.execute(
-            """
+            f"""
             SELECT DISTINCT p.id
             FROM posts p
             LEFT JOIN comments c
                    ON c.post_id = p.id AND c.deleted_at IS NULL
             WHERE p.deleted_at IS NULL
-              AND (p.title LIKE %s OR p.content LIKE %s OR c.content LIKE %s)
+              AND ({or_blocks})
             ORDER BY p.id DESC
             LIMIT %s
             """,
-            (like_pattern, like_pattern, like_pattern, safe_limit),
+            tuple(params),
         )
         post_ids = [row["id"] for row in cursor.fetchall()]
 
