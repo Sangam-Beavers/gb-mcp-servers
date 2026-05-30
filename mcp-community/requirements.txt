@@ -1,0 +1,7 @@
+# MCP2 community-posts server dependencies
+
+# Anthropic official MCP Python SDK (includes FastMCP)
+mcp>=1.0.0
+
+# MySQL client for community_db.posts/comments lookup
+mysql-connector-python>=9.0.0
