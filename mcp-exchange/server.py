@@ -6,8 +6,11 @@ MCP1 — 환율 조회 서버 (FastMCP + Redis)
 
 설계 정본: gb-backend/docs/document-analysis/ai-chatbot-mcp.md §9
 
-키 패턴:  exchange:KRW:<통화>  → string decimal
-예시:     exchange:KRW:VND     → "18.5"
+키 패턴:  rate:KRW-<통화>  → string decimal  (docs/database.md §7 SSOT)
+예시:     rate:KRW-VND     → "18.5"
+
+송금팀이 외부 환율 API 호출 결과를 같은 키 형식으로 캐시할 예정이라 SSOT 정렬됨.
+운영 가면 60초 TTL 자동 적용(외부 API 캐시), 데모 단계는 PM이 직접 INSERT한 영구 데이터.
 """
 
 import logging
@@ -80,8 +83,8 @@ def get_exchange_rate(amount_krw: float, target_currency: str) -> str:
             f"지원 통화: {', '.join(sorted(SUPPORTED_CURRENCIES))}"
         )
 
-    # 2. Redis 조회
-    key = f"exchange:KRW:{target}"
+    # 2. Redis 조회 (docs/database.md §7 SSOT: rate:{from}-{to})
+    key = f"rate:KRW-{target}"
     try:
         rate_str = redis_client.get(key)
     except redis.RedisError as e:
