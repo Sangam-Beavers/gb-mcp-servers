@@ -29,15 +29,19 @@ logger = logging.getLogger("mcp-exchange")
 # Redis 클라이언트
 # ──────────────────────────────────────────────────────────────────────────────
 # 환경변수 (Helm values 또는 docker-compose에서 주입):
-#   REDIS_HOST     (기본 localhost)
-#   REDIS_PORT     (기본 6379)
-#   REDIS_PASSWORD (없으면 None)
-#   REDIS_DB       (기본 0)
+#   REDIS_HOST         (기본 localhost)
+#   REDIS_PORT         (기본 6379)
+#   REDIS_PASSWORD     (없으면 None)
+#   REDIS_DB           (기본 0)
+#   REDIS_SSL_ENABLED  (기본 false) — ElastiCache(stage/prod) TLS 대응
+#                       SM sb/stage/redis/auth 의 tls 프로퍼티가 ExternalSecret 으로 주입됨
+_ssl_enabled = os.environ.get("REDIS_SSL_ENABLED", "false").lower() == "true"
 redis_client = redis.Redis(
     host=os.environ.get("REDIS_HOST", "localhost"),
     port=int(os.environ.get("REDIS_PORT", "6379")),
     password=os.environ.get("REDIS_PASSWORD") or None,
     db=int(os.environ.get("REDIS_DB", "0")),
+    ssl=_ssl_enabled,
     decode_responses=True,
     socket_timeout=5,
     socket_connect_timeout=5,
