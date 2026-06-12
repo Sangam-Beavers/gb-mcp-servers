@@ -1,0 +1,194 @@
+// ─────────────────────────────────────────────────────────────
+// mcp-community (MCP2 커뮤니티 검색 서버) CI/CD 파이프라인 (stage)
+//
+// Python 서버라 Gradle 빌드 단계 없음 (exchange-updater 패턴과 동일).
+//
+// Stage 1) SonarQube 분석: Python 정적 분석
+// Stage 2) 품질 게이트: 통과 못 하면 빌드 중단
+// Stage 3) amd64 이미지 빌드 & push
+// Stage 4) arm64 이미지 빌드 & push
+// Stage 5) 멀티아키 manifest 합치기 (regctl)
+// Stage 6) GitOps: gb-infra values-stage.yaml image tag 갱신 → ArgoCD 감지
+//
+// ⚠ 빌드 컨텍스트 차이 (exchange-updater 와 다름):
+//   mcp-community/Dockerfile 은 `COPY requirements.txt .` 처럼 "자기 폴더 기준" 상대경로를 쓴다
+//   (exchange-updater 는 `COPY exchange-updater/...` 레포루트 기준). 따라서 kaniko 컨텍스트를
+//   레포 루트가 아니라 `pwd`/mcp-community 하위폴더로 잡아야 COPY 가 파일을 찾는다.
+//   → Dockerfile 은 손대지 않고 컨텍스트만 서브폴더로 지정.
+// ─────────────────────────────────────────────────────────────
+pipeline {
+  agent {
+    kubernetes {
+      yaml '''
+        spec:
+          containers:
+          - name: scanner
+            image: sonarsource/sonar-scanner-cli:latest
+            command: ["sleep"]
+            args: ["infinity"]
+            securityContext:
+              runAsUser: 0
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "200m"
+              limits:
+                memory: "1Gi"
+          - name: kaniko-amd64
+            image: gcr.io/kaniko-project/executor:debug
+            command: ["sleep"]
+            args: ["infinity"]
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "300m"
+              limits:
+                memory: "1Gi"
+            volumeMounts:
+            - name: harbor-dockercfg
+              mountPath: /kaniko/.docker
+          - name: kaniko-arm64
+            image: gcr.io/kaniko-project/executor:debug
+            command: ["sleep"]
+            args: ["infinity"]
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "300m"
+              limits:
+                memory: "1Gi"
+            volumeMounts:
+            - name: harbor-dockercfg
+              mountPath: /kaniko/.docker
+          - name: regctl
+            image: ghcr.io/regclient/regctl:alpine
+            command: ["sleep"]
+            args: ["infinity"]
+            volumeMounts:
+            - name: harbor-dockercfg
+              mountPath: /home/appuser/.docker
+          - name: git
+            image: alpine/git:latest
+            command: ["sleep"]
+            args: ["infinity"]
+          volumes:
+          - name: harbor-dockercfg
+            secret:
+              secretName: harbor-dockercfg
+              items:
+              - key: .dockerconfigjson
+                path: config.json
+      '''
+    }
+  }
+
+  environment {
+    REGISTRY     = "harbor.sb.fisa"
+    IMAGE_BASE   = "${REGISTRY}/global_bridge/mcp-community"
+    IMAGE_TAG    = "${BUILD_NUMBER}"
+    CONFIG_REPO  = "github.com/Sangam-Beavers/gb-infra"
+    VALUES_PATH  = "charts/mcp-community/values-stage.yaml"
+    INFRA_BRANCH = "main"
+    SERVICE_PATH = "mcp-community"
+  }
+
+  stages {
+    stage('1) SonarQube 분석') {
+      steps {
+        container('scanner') {
+          withSonarQubeEnv('sonarqube') {
+            sh '''
+              sonar-scanner \
+                -Dsonar.projectKey=gb-mcp-community-stage \
+                -Dsonar.sources=${SERVICE_PATH} \
+                -Dsonar.python.version=3.12
+            '''
+          }
+        }
+      }
+    }
+
+    stage('2) 품질 게이트') {
+      steps {
+        timeout(time: 5, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: false
+        }
+      }
+    }
+
+    stage('3) amd64 이미지 빌드 & push') {
+      steps {
+        container('kaniko-amd64') {
+          sh '''
+            /kaniko/executor \
+              --context `pwd`/${SERVICE_PATH} \
+              --dockerfile `pwd`/${SERVICE_PATH}/Dockerfile \
+              --destination ${IMAGE_BASE}:${IMAGE_TAG}-amd64 \
+              --custom-platform=linux/amd64 \
+              --snapshot-mode=redo \
+              --skip-tls-verify
+          '''
+        }
+      }
+    }
+
+    stage('4) arm64 이미지 빌드 & push') {
+      steps {
+        container('kaniko-arm64') {
+          sh '''
+            /kaniko/executor \
+              --context `pwd`/${SERVICE_PATH} \
+              --dockerfile `pwd`/${SERVICE_PATH}/Dockerfile \
+              --destination ${IMAGE_BASE}:${IMAGE_TAG}-arm64 \
+              --custom-platform=linux/arm64 \
+              --snapshot-mode=redo \
+              --skip-tls-verify
+          '''
+        }
+      }
+    }
+
+    stage('5) 멀티아키 manifest 합치기') {
+      steps {
+        container('regctl') {
+          sh '''
+            regctl --host "reg=harbor.sb.fisa,tls=insecure" index create ${IMAGE_BASE}:${IMAGE_TAG} \
+              --ref ${IMAGE_BASE}:${IMAGE_TAG}-amd64 \
+              --ref ${IMAGE_BASE}:${IMAGE_TAG}-arm64
+          '''
+        }
+      }
+    }
+
+    stage('6) Config repo 업데이트 (GitOps)') {
+      steps {
+        container('git') {
+          withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+            sh '''
+              set -e
+              git config --global user.name  "Jenkins CI"
+              git config --global user.email "jenkins@sb.fisa"
+              git clone --branch ${INFRA_BRANCH} https://oauth2:${GITHUB_TOKEN}@${CONFIG_REPO}.git config-repo
+              cd config-repo
+              sed -i 's|^\\(  tag:\\).*|\\1 "'"${IMAGE_TAG}"'"|' ${VALUES_PATH}
+              echo "=== 변경된 내용 ==="
+              grep "tag:" ${VALUES_PATH}
+              if git diff --quiet; then
+                echo "변경사항 없음 — 커밋 생략"
+                exit 0
+              fi
+              git add ${VALUES_PATH}
+              git commit -m "ci: bump mcp-community image to ${IMAGE_TAG} (stage, multi-arch)"
+              git push origin ${INFRA_BRANCH}
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo "✅ 멀티아키 이미지 ${IMAGE_BASE}:${IMAGE_TAG} → gb-infra ${INFRA_BRANCH} 커밋 → ArgoCD stage 배포" }
+    failure { echo "❌ 실패 — 어느 stage에서 멈췄는지 확인하세요." }
+  }
+}
