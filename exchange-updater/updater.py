@@ -70,12 +70,18 @@ def fetch_rates() -> dict[str, Decimal]:
 
 
 def get_redis_client() -> redis.Redis:
-    """환경변수 기반 Redis 클라이언트 생성. mcp-exchange 와 동일 패턴."""
+    """환경변수 기반 Redis 클라이언트 생성. mcp-exchange 와 동일 패턴.
+
+    REDIS_SSL_ENABLED=true 시 TLS 활성화 — ElastiCache(stage/prod) 전송중 암호화 대응.
+    SM sb/stage/redis/auth 의 tls 프로퍼티가 ExternalSecret 을 통해 이 변수로 주입된다.
+    """
+    ssl_enabled = os.environ.get("REDIS_SSL_ENABLED", "false").lower() == "true"
     return redis.Redis(
         host=os.environ.get("REDIS_HOST", "localhost"),
         port=int(os.environ.get("REDIS_PORT", "6379")),
         password=os.environ.get("REDIS_PASSWORD") or None,
         db=int(os.environ.get("REDIS_DB", "0")),
+        ssl=ssl_enabled,
         decode_responses=True,
         socket_timeout=5,
         socket_connect_timeout=5,
