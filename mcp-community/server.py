@@ -57,6 +57,10 @@ CONTENT_PREVIEW_LEN = 300    # 본문 미리보기 자르기
 # ──────────────────────────────────────────────────────────────────────────────
 # MCP 서버
 # ──────────────────────────────────────────────────────────────────────────────
+# ⚠ host/port는 생성자에 직접 넘겨야 한다. FastMCP.__init__이 host="127.0.0.1"을 Settings에
+#   명시적으로 전달하는데, pydantic-settings 우선순위가 init 인자 > 환경변수라 FASTMCP_HOST env로는
+#   덮어쓸 수 없다(무시됨). K8s에서 0.0.0.0 바인딩이 안 되면 Service/probe가 못 붙어 pod가 0/1로 뜬다.
+#   또한 host=0.0.0.0이면 localhost용 DNS rebinding 자동보호도 비활성화되어 Service DNS 호출이 통과된다.
 mcp = FastMCP(
     "community-posts",
     instructions=(
@@ -64,6 +68,8 @@ mcp = FastMCP(
         "댓글을 검색하는 도구입니다. 사용자의 고민(임금 체불, 비자, 계약서, 초과근무 등)에 "
         "공감과 실전 조언을 제공해야 할 때 호출하세요."
     ),
+    host=os.environ.get("FASTMCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("FASTMCP_PORT", "8000")),
 )
 
 
