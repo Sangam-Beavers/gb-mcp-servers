@@ -127,4 +127,4 @@ if __name__ == "__main__":
         os.environ.get("REDIS_PORT", "6379"),
         os.environ.get("REDIS_DB", "0"),
     )
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
