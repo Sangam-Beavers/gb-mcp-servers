@@ -60,6 +60,11 @@ mcp = FastMCP(
         "원화(KRW) 금액을 다른 통화로 환산하는 환율 도구입니다. "
         "외국인 사용자가 한국에서 받는 임금·금액을 본국 통화로 환산할 때 사용하세요."
     ),
+    # ⚠ host/port는 생성자에 직접 넘겨야 한다. FastMCP.__init__이 host="127.0.0.1"을 Settings에
+    #   명시적으로 전달하는데, pydantic-settings 우선순위가 init 인자 > 환경변수라 FASTMCP_HOST env로는
+    #   덮어쓸 수 없다(무시됨). K8s에서 0.0.0.0 바인딩이 안 되면 Service/probe가 못 붙어 pod가 0/1로 뜬다.
+    host=os.environ.get("FASTMCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("FASTMCP_PORT", "8000")),
 )
 
 
@@ -115,7 +120,7 @@ def get_exchange_rate(amount_krw: float, target_currency: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 진입점
+# 진입점 !
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logger.info(
