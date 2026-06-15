@@ -65,6 +65,10 @@ mcp = FastMCP(
     #   덮어쓸 수 없다(무시됨). K8s에서 0.0.0.0 바인딩이 안 되면 Service/probe가 못 붙어 pod가 0/1로 뜬다.
     host=os.environ.get("FASTMCP_HOST", "0.0.0.0"),
     port=int(os.environ.get("FASTMCP_PORT", "8000")),
+    # 멀티 레플리카(replicas=2) + NLB 분산 환경: 세션을 서버에 들지 않는 stateless HTTP로
+    # 동작시켜야 어느 Pod이 받아도 처리된다. stateful이면 POST(세션 생성)와 GET(스트림)이
+    # 서로 다른 Pod로 가 404로 깨진다(세션 affinity 부재).
+    stateless_http=True,
 )
 
 
